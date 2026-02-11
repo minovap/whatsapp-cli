@@ -14,6 +14,7 @@ import (
 
 type Server struct {
 	mux           *http.ServeMux
+	apiMux        *http.ServeMux
 	Config        Config
 	app           *commands.App
 	authenticated atomic.Bool
@@ -39,8 +40,14 @@ func (s *Server) SetSyncing(v bool) {
 }
 
 func (s *Server) registerRoutes() {
+	// Health endpoints — no auth required
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+
+	// API v1 routes — protected by auth middleware
+	apiMux := http.NewServeMux()
+	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
+	s.apiMux = apiMux
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
