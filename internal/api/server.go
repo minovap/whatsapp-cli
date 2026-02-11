@@ -8,20 +8,23 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
-
-	"github.com/vicentereig/whatsapp-cli/internal/commands"
 )
+
+// AppService defines the interface for the application layer used by API handlers.
+type AppService interface {
+	ListMessages(chatJID *string, query *string, limit, page int) string
+}
 
 type Server struct {
 	mux           *http.ServeMux
 	apiMux        *http.ServeMux
 	Config        Config
-	app           *commands.App
+	app           AppService
 	authenticated atomic.Bool
 	syncing       atomic.Bool
 }
 
-func NewServer(cfg Config, app *commands.App) *Server {
+func NewServer(cfg Config, app AppService) *Server {
 	s := &Server{
 		mux:    http.NewServeMux(),
 		Config: cfg,
@@ -46,6 +49,8 @@ func (s *Server) registerRoutes() {
 
 	// API v1 routes — protected by auth middleware
 	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("GET /messages", s.handleListMessages)
+	apiMux.HandleFunc("GET /messages/search", s.handleSearchMessages)
 	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
 	s.apiMux = apiMux
 }
