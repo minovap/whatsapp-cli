@@ -16,6 +16,8 @@ type AppService interface {
 	ListChats(query *string, limit, page int) string
 	SearchContacts(query string) string
 	SendMessage(ctx context.Context, recipient, message string) string
+	IsAuthenticated() bool
+	IsConnected() bool
 }
 
 type Server struct {
@@ -26,6 +28,7 @@ type Server struct {
 	phoneFilter   *PhoneFilter
 	authenticated atomic.Bool
 	syncing       atomic.Bool
+	currentQR     atomic.Value // stores string
 }
 
 func NewServer(cfg Config, app AppService) *Server {
@@ -59,6 +62,8 @@ func (s *Server) registerRoutes() {
 	apiMux.HandleFunc("GET /chats", s.handleListChats)
 	apiMux.HandleFunc("GET /contacts", s.handleSearchContacts)
 	apiMux.HandleFunc("POST /messages/send", s.handleSendMessage)
+	apiMux.HandleFunc("GET /auth/status", s.handleAuthStatus)
+	apiMux.HandleFunc("GET /auth/qr/image", s.handleQRImage)
 	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
 	s.apiMux = apiMux
 }

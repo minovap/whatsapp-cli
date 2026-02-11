@@ -50,6 +50,14 @@ func NewApp(storeDir, version string) (*App, error) {
 	return app, nil
 }
 
+func (a *App) IsAuthenticated() bool {
+	return a.client.IsAuthenticated()
+}
+
+func (a *App) IsConnected() bool {
+	return a.client.IsConnected()
+}
+
 func (a *App) Close() {
 	if a.mediaWorker != nil {
 		a.mediaWorker.Stop()

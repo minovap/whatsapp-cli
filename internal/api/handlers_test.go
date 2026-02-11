@@ -35,6 +35,9 @@ type mockApp struct {
 	sendMessageCalled bool
 	lastSendRecipient string
 	lastSendMessage   string
+
+	authenticated bool
+	connected     bool
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) string {
@@ -57,6 +60,14 @@ func (m *mockApp) SendMessage(_ context.Context, recipient, message string) stri
 	m.lastSendRecipient = recipient
 	m.lastSendMessage = message
 	return m.sendMessageResult
+}
+
+func (m *mockApp) IsAuthenticated() bool {
+	return m.authenticated
+}
+
+func (m *mockApp) IsConnected() bool {
+	return m.connected
 }
 
 func (m *mockApp) ListChats(query *string, limit, page int) string {
@@ -654,4 +665,152 @@ func TestHandleSendMessage_WithFullJID(t *testing.T) {
 	assert.True(t, mock.sendMessageCalled)
 	// Original "to" value is passed to App.SendMessage (not the auto-suffixed version)
 	assert.Equal(t, "1234567890@s.whatsapp.net", mock.lastSendRecipient)
+}
+
+// --- Auth Status Tests ---
+
+func TestHandleAuthStatus_Authenticated(t *testing.T) {
+	mock := &mockApp{authenticated: true, connected: true}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, true, body["success"])
+	data := body["data"].(map[string]any)
+	assert.Equal(t, true, data["authenticated"])
+	assert.Equal(t, true, data["connected"])
+}
+
+func TestHandleAuthStatus_NotAuthenticated(t *testing.T) {
+	mock := &mockApp{authenticated: false, connected: false}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, true, body["success"])
+	data := body["data"].(map[string]any)
+	assert.Equal(t, false, data["authenticated"])
+	assert.Equal(t, false, data["connected"])
+}
+
+func TestHandleAuthStatus_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// --- QR Image Tests ---
+
+func TestHandleQRImage_AlreadyAuthenticated(t *testing.T) {
+	mock := &mockApp{authenticated: true, connected: true}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/qr/image", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, true, body["success"])
+	data := body["data"].(map[string]any)
+	assert.Equal(t, "already authenticated", data["message"])
+}
+
+func TestHandleQRImage_NoQRAvailable(t *testing.T) {
+	mock := &mockApp{authenticated: false, connected: false}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/qr/image", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, false, body["success"])
+	assert.Nil(t, body["data"])
+	assert.Equal(t, "no QR code available, try again shortly", body["error"])
+}
+
+func TestHandleQRImage_ReturnsPNG(t *testing.T) {
+	mock := &mockApp{authenticated: false, connected: false}
+	srv := newTestServer(mock)
+	srv.SetCurrentQR("test-qr-code-data")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/qr/image", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/png", w.Header().Get("Content-Type"))
+	// PNG magic bytes
+	assert.True(t, len(w.Body.Bytes()) > 8)
+	assert.Equal(t, byte(0x89), w.Body.Bytes()[0])
+	assert.Equal(t, byte('P'), w.Body.Bytes()[1])
+	assert.Equal(t, byte('N'), w.Body.Bytes()[2])
+	assert.Equal(t, byte('G'), w.Body.Bytes()[3])
+}
+
+func TestHandleQRImage_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/qr/image", nil)
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestSetCurrentQR_GetCurrentQR(t *testing.T) {
+	srv := newTestServer(nil)
+
+	// Initially empty
+	assert.Equal(t, "", srv.GetCurrentQR())
+
+	// Set a QR code
+	srv.SetCurrentQR("some-qr-data")
+	assert.Equal(t, "some-qr-data", srv.GetCurrentQR())
+
+	// Update QR code
+	srv.SetCurrentQR("new-qr-data")
+	assert.Equal(t, "new-qr-data", srv.GetCurrentQR())
+
+	// Clear QR code
+	srv.SetCurrentQR("")
+	assert.Equal(t, "", srv.GetCurrentQR())
 }
