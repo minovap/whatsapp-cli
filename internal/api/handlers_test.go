@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,6 +30,11 @@ type mockApp struct {
 	searchContactsResult string
 	searchContactsCalled bool
 	lastContactsQuery    string
+
+	sendMessageResult string
+	sendMessageCalled bool
+	lastSendRecipient string
+	lastSendMessage   string
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) string {
@@ -43,6 +50,13 @@ func (m *mockApp) SearchContacts(query string) string {
 	m.searchContactsCalled = true
 	m.lastContactsQuery = query
 	return m.searchContactsResult
+}
+
+func (m *mockApp) SendMessage(_ context.Context, recipient, message string) string {
+	m.sendMessageCalled = true
+	m.lastSendRecipient = recipient
+	m.lastSendMessage = message
+	return m.sendMessageResult
 }
 
 func (m *mockApp) ListChats(query *string, limit, page int) string {
@@ -419,4 +433,225 @@ func TestHandleSearchContacts_WritesAppResponseDirectly(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, appJSON, w.Body.String())
+}
+
+func TestHandleSendMessage_Success(t *testing.T) {
+	mock := &mockApp{
+		sendMessageResult: `{"success":true,"data":{"id":"msg123"}}`,
+	}
+	srv := newTestServer(mock)
+
+	body := `{"to":"1234567890","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.Equal(t, `{"success":true,"data":{"id":"msg123"}}`, w.Body.String())
+	assert.True(t, mock.sendMessageCalled)
+	assert.Equal(t, "1234567890", mock.lastSendRecipient)
+	assert.Equal(t, "Hello!", mock.lastSendMessage)
+}
+
+func TestHandleSendMessage_MissingTo(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	body := `{"message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, false, resp["success"])
+	assert.Nil(t, resp["data"])
+	assert.Equal(t, "'to' and 'message' fields are required", resp["error"])
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_MissingMessage(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	body := `{"to":"1234567890"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, false, resp["success"])
+	assert.Equal(t, "'to' and 'message' fields are required", resp["error"])
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_EmptyBody(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_InvalidJSON(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader("not json"))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, false, resp["success"])
+	assert.Equal(t, "invalid JSON body", resp["error"])
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_BlockedByFilter(t *testing.T) {
+	mock := &mockApp{}
+	// Create server with a whitelist that only allows 567890
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneWhitelist: []string{"567890"},
+	}, mock)
+
+	// Send to a number NOT in the whitelist
+	body := `{"to":"9999999999","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	var resp map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, false, resp["success"])
+	assert.Nil(t, resp["data"])
+	assert.Equal(t, "recipient not allowed", resp["error"])
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_AllowedByWhitelist(t *testing.T) {
+	mock := &mockApp{
+		sendMessageResult: `{"success":true,"data":{"id":"msg1"}}`,
+	}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneWhitelist: []string{"567890"},
+	}, mock)
+
+	// Send to a number matching the whitelist suffix
+	body := `{"to":"1234567890","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.sendMessageCalled)
+	assert.Equal(t, "1234567890", mock.lastSendRecipient)
+}
+
+func TestHandleSendMessage_BlockedByBlacklist(t *testing.T) {
+	mock := &mockApp{}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneBlacklist: []string{"567890"},
+	}, mock)
+
+	body := `{"to":"1234567890","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_GroupJIDPassesFilter(t *testing.T) {
+	mock := &mockApp{
+		sendMessageResult: `{"success":true,"data":{"id":"msg1"}}`,
+	}
+	// Whitelist only allows 567890, but group JIDs should always pass
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneWhitelist: []string{"567890"},
+	}, mock)
+
+	body := `{"to":"12345678@g.us","message":"Hello group!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	body := `{"to":"1234567890","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.False(t, mock.sendMessageCalled)
+}
+
+func TestHandleSendMessage_WithFullJID(t *testing.T) {
+	mock := &mockApp{
+		sendMessageResult: `{"success":true,"data":{"id":"msg1"}}`,
+	}
+	srv := newTestServer(mock)
+
+	// Provide full JID with @s.whatsapp.net
+	body := `{"to":"1234567890@s.whatsapp.net","message":"Hello!"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", strings.NewReader(body))
+	req.Header.Set("X-API-Key", "test-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.sendMessageCalled)
+	// Original "to" value is passed to App.SendMessage (not the auto-suffixed version)
+	assert.Equal(t, "1234567890@s.whatsapp.net", mock.lastSendRecipient)
 }

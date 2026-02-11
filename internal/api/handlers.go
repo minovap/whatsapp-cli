@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +74,46 @@ func (s *Server) handleSearchContacts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := s.app.SearchContacts(query)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(result))
+}
+
+type sendRequest struct {
+	To      string `json:"to"`
+	Message string `json:"message"`
+}
+
+func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
+	var req sendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"success":false,"data":null,"error":"invalid JSON body"}`))
+		return
+	}
+
+	if req.To == "" || req.Message == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"success":false,"data":null,"error":"'to' and 'message' fields are required"}`))
+		return
+	}
+
+	// Auto-append @s.whatsapp.net if no @ sign (matching CLI behavior)
+	recipient := req.To
+	if !strings.Contains(recipient, "@") {
+		recipient = recipient + "@s.whatsapp.net"
+	}
+
+	// Check phone filter
+	if !s.phoneFilter.IsAllowed(recipient) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"success":false,"data":null,"error":"recipient not allowed"}`))
+		return
+	}
+
+	result := s.app.SendMessage(r.Context(), req.To, req.Message)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
 }

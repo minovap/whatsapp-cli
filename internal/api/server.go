@@ -15,6 +15,7 @@ type AppService interface {
 	ListMessages(chatJID *string, query *string, limit, page int) string
 	ListChats(query *string, limit, page int) string
 	SearchContacts(query string) string
+	SendMessage(ctx context.Context, recipient, message string) string
 }
 
 type Server struct {
@@ -22,15 +23,17 @@ type Server struct {
 	apiMux        *http.ServeMux
 	Config        Config
 	app           AppService
+	phoneFilter   *PhoneFilter
 	authenticated atomic.Bool
 	syncing       atomic.Bool
 }
 
 func NewServer(cfg Config, app AppService) *Server {
 	s := &Server{
-		mux:    http.NewServeMux(),
-		Config: cfg,
-		app:    app,
+		mux:         http.NewServeMux(),
+		Config:      cfg,
+		app:         app,
+		phoneFilter: NewPhoneFilter(cfg.PhoneWhitelist, cfg.PhoneBlacklist),
 	}
 	s.registerRoutes()
 	return s
@@ -55,6 +58,7 @@ func (s *Server) registerRoutes() {
 	apiMux.HandleFunc("GET /messages/search", s.handleSearchMessages)
 	apiMux.HandleFunc("GET /chats", s.handleListChats)
 	apiMux.HandleFunc("GET /contacts", s.handleSearchContacts)
+	apiMux.HandleFunc("POST /messages/send", s.handleSendMessage)
 	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
 	s.apiMux = apiMux
 }
