@@ -63,19 +63,29 @@ type MessageDownloadInfo struct {
 }
 
 type ListMessagesParams struct {
-	After   *time.Time
-	Before  *time.Time
-	Sender  *string
-	ChatJID *string
-	Query   *string
-	Limit   int
-	Page    int
+	After       *time.Time
+	Before      *time.Time
+	Sender      *string
+	ChatJID     *string
+	Query       *string
+	Limit       int
+	Page        int
+	IncludeJIDs []string
+	ExcludeJIDs []string
 }
 
 type ListChatsParams struct {
-	Query *string
-	Limit int
-	Page  int
+	Query       *string
+	Limit       int
+	Page        int
+	IncludeJIDs []string
+	ExcludeJIDs []string
+}
+
+type SearchContactsParams struct {
+	Query       string
+	IncludeJIDs []string
+	ExcludeJIDs []string
 }
 
 func NewMessageStore(dbPath string) (*MessageStore, error) {
@@ -230,6 +240,24 @@ func (s *MessageStore) StoreMessage(id, chatJID, sender, content string, timesta
 	return err
 }
 
+func appendJIDFilter(query string, args []interface{}, column string, includeJIDs, excludeJIDs []string) (string, []interface{}) {
+	if len(includeJIDs) > 0 {
+		clauses := make([]string, len(includeJIDs))
+		for i, suffix := range includeJIDs {
+			clauses[i] = column + " LIKE ?"
+			args = append(args, "%"+suffix)
+		}
+		query += " AND (" + strings.Join(clauses, " OR ") + ")"
+	}
+	if len(excludeJIDs) > 0 {
+		for _, suffix := range excludeJIDs {
+			query += " AND " + column + " NOT LIKE ?"
+			args = append(args, "%"+suffix)
+		}
+	}
+	return query, args
+}
+
 func (s *MessageStore) ListMessages(params ListMessagesParams) ([]Message, error) {
 	query := `SELECT m.id, m.chat_jid, c.name, m.sender, m.content, m.timestamp, m.is_from_me, m.media_type
 	          FROM messages m JOIN chats c ON m.chat_jid = c.jid WHERE 1=1`
@@ -256,6 +284,8 @@ func (s *MessageStore) ListMessages(params ListMessagesParams) ([]Message, error
 		args = append(args, "%"+*params.Query+"%")
 	}
 
+	query, args = appendJIDFilter(query, args, "m.chat_jid", params.IncludeJIDs, params.ExcludeJIDs)
+
 	query += " ORDER BY m.timestamp DESC LIMIT ? OFFSET ?"
 	args = append(args, params.Limit, params.Page*params.Limit)
 
@@ -278,13 +308,17 @@ func (s *MessageStore) ListMessages(params ListMessagesParams) ([]Message, error
 	return messages, nil
 }
 
-func (s *MessageStore) SearchContacts(query string) ([]Contact, error) {
-	rows, err := s.db.Query(`
-		SELECT jid, name FROM chats
+func (s *MessageStore) SearchContacts(params SearchContactsParams) ([]Contact, error) {
+	q := `SELECT jid, name FROM chats
 		WHERE (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
-		AND jid NOT LIKE '%@g.us'
-		ORDER BY name LIMIT 50
-	`, "%"+query+"%", "%"+query+"%")
+		AND jid NOT LIKE '%@g.us'`
+	args := []interface{}{"%" + params.Query + "%", "%" + params.Query + "%"}
+
+	q, args = appendJIDFilter(q, args, "jid", params.IncludeJIDs, params.ExcludeJIDs)
+
+	q += " ORDER BY name LIMIT 50"
+
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -425,6 +459,8 @@ func (s *MessageStore) ListChats(params ListChatsParams) ([]Chat, error) {
 		query += " AND (LOWER(name) LIKE LOWER(?) OR jid LIKE ?)"
 		args = append(args, "%"+*params.Query+"%", "%"+*params.Query+"%")
 	}
+
+	query, args = appendJIDFilter(query, args, "jid", params.IncludeJIDs, params.ExcludeJIDs)
 
 	query += " ORDER BY last_message_time DESC LIMIT ? OFFSET ?"
 	args = append(args, params.Limit, params.Page*params.Limit)

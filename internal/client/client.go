@@ -99,6 +99,25 @@ func (w *WAClient) IsAuthenticated() bool {
 	return w.client.Store.ID != nil
 }
 
+func (w *WAClient) IsConnected() bool {
+	return w.client.IsConnected()
+}
+
+// GetQRChannel returns a channel that receives QR code events for authentication.
+// The caller is responsible for reading from the channel and calling Connect() has
+// already been triggered internally. This is used by the API server for HTTP-based
+// QR authentication, as opposed to Authenticate() which renders QR to the terminal.
+func (w *WAClient) GetQRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
+	qrChan, err := w.client.GetQRChannel(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get QR channel: %w", err)
+	}
+	if err := w.client.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect: %w", err)
+	}
+	return qrChan, nil
+}
+
 func (w *WAClient) Authenticate(ctx context.Context) error {
 	if w.IsAuthenticated() {
 		return nil

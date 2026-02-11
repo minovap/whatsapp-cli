@@ -162,7 +162,7 @@ func TestSearchContacts(t *testing.T) {
 	store.StoreChat("5678@s.whatsapp.net", "Jane Smith", time.Now())
 	store.StoreChat("9999@g.us", "Group Chat", time.Now()) // Should be excluded
 
-	contacts, err := store.SearchContacts("John")
+	contacts, err := store.SearchContacts(SearchContactsParams{Query: "John"})
 	require.NoError(t, err)
 	assert.Len(t, contacts, 1)
 	assert.Equal(t, "John Doe", contacts[0].Name)
@@ -179,4 +179,169 @@ func TestListChats(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, chats, 2)
 	assert.Equal(t, "John Doe", chats[0].Name) // Most recent first
+}
+
+// --- JID suffix filtering tests ---
+
+func setupFilterTestDB(t *testing.T) *MessageStore {
+	s := setupTestDB(t)
+	now := time.Now()
+
+	// Create chats with distinct phone suffixes
+	require.NoError(t, s.StoreChat("11111234@s.whatsapp.net", "Alice", now))
+	require.NoError(t, s.StoreChat("22225678@s.whatsapp.net", "Bob", now.Add(-time.Hour)))
+	require.NoError(t, s.StoreChat("33339012@s.whatsapp.net", "Charlie", now.Add(-2*time.Hour)))
+	require.NoError(t, s.StoreChat("99999999@g.us", "Group Chat", now.Add(-3*time.Hour)))
+
+	// Create messages in each chat
+	require.NoError(t, s.StoreMessage("m1", "11111234@s.whatsapp.net", "11111234", "Hello from Alice", now, false, "", "", "", "", "", nil, nil, nil, 0))
+	require.NoError(t, s.StoreMessage("m2", "22225678@s.whatsapp.net", "22225678", "Hello from Bob", now.Add(-time.Hour), false, "", "", "", "", "", nil, nil, nil, 0))
+	require.NoError(t, s.StoreMessage("m3", "33339012@s.whatsapp.net", "33339012", "Hello from Charlie", now.Add(-2*time.Hour), false, "", "", "", "", "", nil, nil, nil, 0))
+	require.NoError(t, s.StoreMessage("m4", "99999999@g.us", "11111234", "Hello from group", now.Add(-3*time.Hour), false, "", "", "", "", "", nil, nil, nil, 0))
+
+	return s
+}
+
+func TestListMessages_IncludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Include only Alice's suffix
+	messages, err := s.ListMessages(ListMessagesParams{
+		Limit:       100,
+		IncludeJIDs: []string{"111234@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, messages, 1)
+	assert.Equal(t, "Hello from Alice", messages[0].Content)
+}
+
+func TestListMessages_IncludeJIDs_Multiple(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Include Alice and Bob
+	messages, err := s.ListMessages(ListMessagesParams{
+		Limit:       100,
+		IncludeJIDs: []string{"111234@s.whatsapp.net", "225678@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, messages, 2)
+}
+
+func TestListMessages_ExcludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Exclude Charlie
+	messages, err := s.ListMessages(ListMessagesParams{
+		Limit:       100,
+		ExcludeJIDs: []string{"339012@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, messages, 3) // Alice, Bob, and Group
+}
+
+func TestListMessages_ExcludeJIDs_Multiple(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Exclude Alice and Bob
+	messages, err := s.ListMessages(ListMessagesParams{
+		Limit:       100,
+		ExcludeJIDs: []string{"111234@s.whatsapp.net", "225678@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, messages, 2) // Charlie and Group
+}
+
+func TestListMessages_NoJIDFilter(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// No filter — returns all
+	messages, err := s.ListMessages(ListMessagesParams{Limit: 100})
+	require.NoError(t, err)
+	assert.Len(t, messages, 4)
+}
+
+func TestListChats_IncludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	chats, err := s.ListChats(ListChatsParams{
+		Limit:       100,
+		IncludeJIDs: []string{"111234@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, chats, 1)
+	assert.Equal(t, "Alice", chats[0].Name)
+}
+
+func TestListChats_ExcludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	chats, err := s.ListChats(ListChatsParams{
+		Limit:       100,
+		ExcludeJIDs: []string{"111234@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, chats, 3) // Bob, Charlie, Group
+}
+
+func TestListChats_IncludeJIDs_Multiple(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	chats, err := s.ListChats(ListChatsParams{
+		Limit:       100,
+		IncludeJIDs: []string{"111234@s.whatsapp.net", "225678@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, chats, 2)
+}
+
+func TestListChats_NoJIDFilter(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	chats, err := s.ListChats(ListChatsParams{Limit: 100})
+	require.NoError(t, err)
+	assert.Len(t, chats, 4)
+}
+
+func TestSearchContacts_IncludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Search all contacts but include only Alice's suffix
+	contacts, err := s.SearchContacts(SearchContactsParams{
+		Query:       "",
+		IncludeJIDs: []string{"111234@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, contacts, 1)
+	assert.Equal(t, "Alice", contacts[0].Name)
+}
+
+func TestSearchContacts_ExcludeJIDs(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	// Search all contacts but exclude Alice
+	contacts, err := s.SearchContacts(SearchContactsParams{
+		Query:       "",
+		ExcludeJIDs: []string{"111234@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, contacts, 2) // Bob and Charlie (group excluded by SearchContacts)
+}
+
+func TestSearchContacts_NoJIDFilter(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	contacts, err := s.SearchContacts(SearchContactsParams{Query: ""})
+	require.NoError(t, err)
+	assert.Len(t, contacts, 3) // Alice, Bob, Charlie (group excluded)
+}
+
+func TestSearchContacts_IncludeJIDs_Multiple(t *testing.T) {
+	s := setupFilterTestDB(t)
+
+	contacts, err := s.SearchContacts(SearchContactsParams{
+		Query:       "",
+		IncludeJIDs: []string{"111234@s.whatsapp.net", "225678@s.whatsapp.net"},
+	})
+	require.NoError(t, err)
+	assert.Len(t, contacts, 2)
 }

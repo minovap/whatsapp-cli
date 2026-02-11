@@ -50,6 +50,14 @@ func NewApp(storeDir, version string) (*App, error) {
 	return app, nil
 }
 
+func (a *App) IsAuthenticated() bool {
+	return a.client.IsAuthenticated()
+}
+
+func (a *App) IsConnected() bool {
+	return a.client.IsConnected()
+}
+
 func (a *App) Close() {
 	if a.mediaWorker != nil {
 		a.mediaWorker.Stop()
@@ -60,6 +68,35 @@ func (a *App) Close() {
 	if a.store != nil {
 		a.store.Close()
 	}
+}
+
+// AuthWithQRCallback starts the QR authentication flow and calls onQR with the
+// QR code string for each "code" event, and onSuccess when authentication succeeds.
+// It blocks until authentication completes, times out, or ctx is cancelled.
+func (a *App) AuthWithQRCallback(ctx context.Context, onQR func(code string), onSuccess func()) error {
+	qrChan, err := a.client.GetQRChannel(ctx)
+	if err != nil {
+		return err
+	}
+	for evt := range qrChan {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		switch evt.Event {
+		case "code":
+			if onQR != nil {
+				onQR(evt.Code)
+			}
+		case "success":
+			if onSuccess != nil {
+				onSuccess()
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("QR authentication failed")
 }
 
 func (a *App) Auth(ctx context.Context) string {
@@ -80,12 +117,15 @@ func (a *App) Auth(ctx context.Context) string {
 	})
 }
 
-func (a *App) ListMessages(chatJID *string, query *string, limit, page int) string {
+func (a *App) ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string {
 	messages, err := a.store.ListMessages(store.ListMessagesParams{
-		ChatJID: chatJID,
-		Query:   query,
-		Limit:   limit,
-		Page:    page,
+		ChatJID:     chatJID,
+		Query:       query,
+		Limit:       limit,
+		Page:        page,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
+		After:       after,
 	})
 	if err != nil {
 		return output.Error(err)
@@ -94,8 +134,12 @@ func (a *App) ListMessages(chatJID *string, query *string, limit, page int) stri
 	return output.Success(messages)
 }
 
-func (a *App) SearchContacts(query string) string {
-	contacts, err := a.store.SearchContacts(query)
+func (a *App) SearchContacts(query string, includeJIDs, excludeJIDs []string) string {
+	contacts, err := a.store.SearchContacts(store.SearchContactsParams{
+		Query:       query,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
+	})
 	if err != nil {
 		return output.Error(err)
 	}
@@ -103,11 +147,13 @@ func (a *App) SearchContacts(query string) string {
 	return output.Success(contacts)
 }
 
-func (a *App) ListChats(query *string, limit, page int) string {
+func (a *App) ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string {
 	chats, err := a.store.ListChats(store.ListChatsParams{
-		Query: query,
-		Limit: limit,
-		Page:  page,
+		Query:       query,
+		Limit:       limit,
+		Page:        page,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
 	})
 	if err != nil {
 		return output.Error(err)
@@ -537,8 +583,9 @@ func contains(s, substr string) bool {
 	return false
 }
 
-// Sync connects to WhatsApp and continuously syncs messages to the database
-func (a *App) Sync(ctx context.Context) string {
+// Sync connects to WhatsApp and continuously syncs messages to the database.
+// If onMessage is non-nil, it is called for each message synced.
+func (a *App) Sync(ctx context.Context, onMessage func()) string {
 	messageCount := 0
 
 	version := a.version
@@ -619,6 +666,9 @@ func (a *App) Sync(ctx context.Context) string {
 			}
 
 			messageCount++
+			if onMessage != nil {
+				onMessage()
+			}
 			fmt.Fprintf(os.Stderr, "\r💬 Synced %d messages...", messageCount)
 
 		case *events.HistorySync:
@@ -737,6 +787,9 @@ func (a *App) Sync(ctx context.Context) string {
 					}
 
 					messageCount++
+					if onMessage != nil {
+						onMessage()
+					}
 				}
 			}
 			fmt.Fprintf(os.Stderr, "\r💬 Synced %d messages...", messageCount)

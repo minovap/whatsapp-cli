@@ -1,0 +1,17 @@
+services:
+  whatsapp-api:
+    image: ghcr.io/minovap/whatsapp-api:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - whatsapp-data:/data/store
+    environment:
+      API_KEY: ${API_KEY}
+      MAX_MESSAGES: 100
+      MAX_HOURS: 48
+      PHONE_WHITELIST: ${PHONE_WHITELIST:-}
+      PHONE_BLACKLIST: ${PHONE_BLACKLIST:-}
+
+volumes:
+  whatsapp-data:

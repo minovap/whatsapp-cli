@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vicentereig/whatsapp-cli/internal/api"
 	"github.com/vicentereig/whatsapp-cli/internal/commands"
 )
 
@@ -76,6 +77,52 @@ func main() {
 		return
 	}
 
+	// For serve, parse config and override store dir
+	if command == "serve" {
+		cfg, err := api.ParseConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Config error: %v"}`+"\n", err)
+			os.Exit(1)
+		}
+		serveStoreDir, _ := filepath.Abs(cfg.StoreDir)
+		app, err := commands.NewApp(serveStoreDir, version)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Failed to initialize: %v"}`+"\n", err)
+			os.Exit(1)
+		}
+		defer app.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			cancel()
+		}()
+		defer cancel()
+
+		srv := api.NewServer(cfg, app)
+
+		// Handle authentication state
+		if app.IsAuthenticated() {
+			srv.SetAuthenticated(true)
+			fmt.Fprintln(os.Stderr, "Already authenticated")
+		} else {
+			fmt.Fprintln(os.Stderr, "Not authenticated — starting QR auth flow")
+			srv.StartQRAuth(ctx, app)
+		}
+
+		// Start background sync (waits for authentication before syncing)
+		srv.StartBackgroundSync(ctx)
+
+		fmt.Fprintf(os.Stderr, "Starting API server on port %d\n", cfg.Port)
+		if err := srv.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Server error: %v"}`+"\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Create app
 	absStoreDir, _ := filepath.Abs(*storeDir)
 	app, err := commands.NewApp(absStoreDir, version)
@@ -110,7 +157,7 @@ func main() {
 		result = app.Auth(ctx)
 
 	case "sync":
-		result = app.Sync(ctx)
+		result = app.Sync(ctx, nil)
 
 	case "messages":
 		messagesCmd := flag.NewFlagSet("messages", flag.ExitOnError)
@@ -125,13 +172,13 @@ func main() {
 		}
 
 		if subcommand == "search" || *query != "" {
-			result = app.ListMessages(nil, query, *limit, *page)
+			result = app.ListMessages(nil, query, *limit, *page, nil, nil, nil)
 		} else {
 			var chatPtr *string
 			if *chatJID != "" {
 				chatPtr = chatJID
 			}
-			result = app.ListMessages(chatPtr, nil, *limit, *page)
+			result = app.ListMessages(chatPtr, nil, *limit, *page, nil, nil, nil)
 		}
 
 	case "contacts":
@@ -147,7 +194,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, `{"success":false,"data":null,"error":"--query required"}`)
 			os.Exit(1)
 		}
-		result = app.SearchContacts(*query)
+		result = app.SearchContacts(*query, nil, nil)
 
 	case "chats":
 		chatsCmd := flag.NewFlagSet("chats", flag.ExitOnError)
@@ -164,7 +211,7 @@ func main() {
 		if *query != "" {
 			queryPtr = query
 		}
-		result = app.ListChats(queryPtr, *limit, *page)
+		result = app.ListChats(queryPtr, *limit, *page, nil, nil)
 
 	case "send":
 		sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
