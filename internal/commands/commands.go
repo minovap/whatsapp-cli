@@ -58,6 +58,29 @@ func (a *App) IsConnected() bool {
 	return a.client.IsConnected()
 }
 
+// RefreshChatNames iterates all chats in the DB and re-resolves names
+// from whatsmeow's contact store, backfilling any chats that only have a JID as name.
+func (a *App) RefreshChatNames(ctx context.Context) {
+	jids, err := a.store.ListAllChatJIDs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ Failed to list chats for name refresh: %v\n", err)
+		return
+	}
+
+	updated := 0
+	for _, jid := range jids {
+		name := a.client.ResolveChatName(ctx, jid, nil)
+		if name != "" && name != jid {
+			if err := a.store.UpdateChatName(jid, name); err == nil {
+				updated++
+			}
+		}
+	}
+	if updated > 0 {
+		fmt.Fprintf(os.Stderr, "📇 Refreshed %d chat names\n", updated)
+	}
+}
+
 func (a *App) Close() {
 	if a.mediaWorker != nil {
 		a.mediaWorker.Stop()
@@ -797,6 +820,8 @@ func (a *App) Sync(ctx context.Context, onMessage func()) string {
 		case *events.Connected:
 			fmt.Fprintln(os.Stderr, "\n✓ Connected to WhatsApp")
 			fmt.Fprintln(os.Stderr, "🔄 Listening for messages... (Press Ctrl+C to stop)")
+			// Refresh chat names from whatsmeow's contact store in the background
+			go a.RefreshChatNames(ctx)
 
 		case *events.Disconnected:
 			fmt.Fprintln(os.Stderr, "\n⚠ Disconnected from WhatsApp")

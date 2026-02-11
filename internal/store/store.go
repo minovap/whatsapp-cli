@@ -25,6 +25,7 @@ type Message struct {
 type Chat struct {
 	JID             string    `json:"jid"`
 	Name            string    `json:"name"`
+	Phone           string    `json:"phone,omitempty"`
 	LastMessageTime time.Time `json:"last_message_time"`
 	LastMessage     *string   `json:"last_message,omitempty"`
 	LastSender      *string   `json:"last_sender,omitempty"`
@@ -451,6 +452,32 @@ func (s *MessageStore) MarkMediaDownloaded(id, chatJID, localPath string, downlo
 	return err
 }
 
+func (s *MessageStore) ListAllChatJIDs() ([]string, error) {
+	rows, err := s.db.Query("SELECT jid FROM chats")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jids []string
+	for rows.Next() {
+		var jid string
+		if err := rows.Scan(&jid); err != nil {
+			return nil, err
+		}
+		jids = append(jids, jid)
+	}
+	return jids, nil
+}
+
+func (s *MessageStore) UpdateChatName(jid, name string) error {
+	_, err := s.db.Exec(
+		`UPDATE chats SET name = ? WHERE jid = ? AND (name IS NULL OR name = '' OR name = jid)`,
+		name, jid,
+	)
+	return err
+}
+
 func (s *MessageStore) ListChats(params ListChatsParams) ([]Chat, error) {
 	query := "SELECT jid, name, last_message_time FROM chats WHERE 1=1"
 	args := []interface{}{}
@@ -476,6 +503,9 @@ func (s *MessageStore) ListChats(params ListChatsParams) ([]Chat, error) {
 		var c Chat
 		if err := rows.Scan(&c.JID, &c.Name, &c.LastMessageTime); err != nil {
 			return nil, err
+		}
+		if idx := strings.Index(c.JID, "@"); idx > 0 {
+			c.Phone = c.JID[:idx]
 		}
 		chats = append(chats, c)
 	}
