@@ -19,6 +19,7 @@ type AppService interface {
 	ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string
 	SearchContacts(query string, includeJIDs, excludeJIDs []string) string
 	SendMessage(ctx context.Context, recipient, message string) string
+	GetMediaFile(messageID string, chatJID *string) (path string, mimeType string, err error)
 	IsAuthenticated() bool
 	IsConnected() bool
 	Sync(ctx context.Context, onMessage func()) string
@@ -70,6 +71,7 @@ func (s *Server) registerRoutes() {
 	apiMux.HandleFunc("GET /chats", s.handleListChats)
 	apiMux.HandleFunc("GET /contacts", s.handleSearchContacts)
 	apiMux.HandleFunc("POST /messages/send", s.handleSendMessage)
+	apiMux.HandleFunc("GET /media/{message_id}", s.handleMediaDownload)
 	apiMux.HandleFunc("GET /auth/status", s.handleAuthStatus)
 	apiMux.HandleFunc("GET /auth/qr/image", s.handleQRImage)
 	apiMux.HandleFunc("GET /sync/status", s.handleSyncStatus)

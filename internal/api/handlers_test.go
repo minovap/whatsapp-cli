@@ -51,6 +51,10 @@ type mockApp struct {
 	syncResult string
 	syncCalled bool
 	syncCtx    context.Context
+
+	mediaFilePath     string
+	mediaFileMimeType string
+	mediaFileErr      error
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string {
@@ -94,6 +98,10 @@ func (m *mockApp) IsAuthenticated() bool {
 
 func (m *mockApp) IsConnected() bool {
 	return m.connected
+}
+
+func (m *mockApp) GetMediaFile(messageID string, chatJID *string) (string, string, error) {
+	return m.mediaFilePath, m.mediaFileMimeType, m.mediaFileErr
 }
 
 func (m *mockApp) ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string {

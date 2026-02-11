@@ -129,6 +129,38 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(result))
 }
 
+func (s *Server) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
+	messageID := r.PathValue("message_id")
+	if messageID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"success":false,"data":null,"error":"message_id required"}`))
+		return
+	}
+
+	var chatJID *string
+	if v := r.URL.Query().Get("chat_jid"); v != "" {
+		chatJID = &v
+	}
+
+	filePath, mimeType, err := s.app.GetMediaFile(messageID, chatJID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"data":    nil,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if mimeType != "" {
+		w.Header().Set("Content-Type", mimeType)
+	}
+	http.ServeFile(w, r, filePath)
+}
+
 // computeAfter returns a *time.Time representing the earliest allowed message time
 // based on Config.MaxHours. Returns nil if MaxHours is 0 (disabled).
 func (s *Server) computeAfter() *time.Time {

@@ -25,7 +25,9 @@ type Message struct {
 type Chat struct {
 	JID             string    `json:"jid"`
 	Name            string    `json:"name"`
-	Phone           string    `json:"phone,omitempty"`
+	Type            string    `json:"type"`                // "individual", "group", or "lid"
+	Phone           string    `json:"phone,omitempty"`     // only for individual chats
+	GroupID         string    `json:"group_id,omitempty"`  // only for group chats
 	LastMessageTime time.Time `json:"last_message_time"`
 	LastMessage     *string   `json:"last_message,omitempty"`
 	LastSender      *string   `json:"last_sender,omitempty"`
@@ -505,7 +507,21 @@ func (s *MessageStore) ListChats(params ListChatsParams) ([]Chat, error) {
 			return nil, err
 		}
 		if idx := strings.Index(c.JID, "@"); idx > 0 {
-			c.Phone = c.JID[:idx]
+			prefix := c.JID[:idx]
+			suffix := c.JID[idx+1:]
+			switch suffix {
+			case "g.us":
+				c.Type = "group"
+				c.GroupID = prefix
+			case "s.whatsapp.net":
+				c.Type = "individual"
+				c.Phone = prefix
+			case "lid":
+				c.Type = "lid"
+			default:
+				c.Type = "individual"
+				c.Phone = prefix
+			}
 		}
 		chats = append(chats, c)
 	}

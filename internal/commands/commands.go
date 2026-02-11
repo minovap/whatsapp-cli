@@ -58,6 +58,21 @@ func (a *App) IsConnected() bool {
 	return a.client.IsConnected()
 }
 
+// GetMediaFile returns the local file path and MIME type for a downloaded media message.
+func (a *App) GetMediaFile(messageID string, chatJID *string) (string, string, error) {
+	info, err := a.store.GetMessageForDownload(messageID, chatJID)
+	if err != nil {
+		return "", "", err
+	}
+	if info.LocalPath == nil || *info.LocalPath == "" {
+		return "", "", fmt.Errorf("media not yet downloaded")
+	}
+	if _, err := os.Stat(*info.LocalPath); err != nil {
+		return "", "", fmt.Errorf("media file not found on disk")
+	}
+	return *info.LocalPath, info.MimeType, nil
+}
+
 // RefreshChatNames iterates all chats in the DB and re-resolves names
 // from whatsmeow's contact store, backfilling any chats that only have a JID as name.
 func (a *App) RefreshChatNames(ctx context.Context) {
@@ -695,6 +710,19 @@ func (a *App) Sync(ctx context.Context, onMessage func()) string {
 			fmt.Fprintf(os.Stderr, "\r💬 Synced %d messages...", messageCount)
 
 		case *events.HistorySync:
+			// Process push names from history sync payload
+			for _, pn := range v.Data.GetPushnames() {
+				id := pn.GetID()
+				pushName := pn.GetPushname()
+				if id != "" && pushName != "" && pushName != "-" {
+					jid := id
+					if !strings.Contains(id, "@") {
+						jid = id + "@s.whatsapp.net"
+					}
+					a.store.UpdateChatName(jid, pushName)
+				}
+			}
+
 			fmt.Fprintf(os.Stderr, "\n📜 Processing history sync (%d conversations)...\n", len(v.Data.Conversations))
 			for _, conv := range v.Data.Conversations {
 				chatJID := conv.GetID()
@@ -820,7 +848,9 @@ func (a *App) Sync(ctx context.Context, onMessage func()) string {
 		case *events.Connected:
 			fmt.Fprintln(os.Stderr, "\n✓ Connected to WhatsApp")
 			fmt.Fprintln(os.Stderr, "🔄 Listening for messages... (Press Ctrl+C to stop)")
-			// Refresh chat names from whatsmeow's contact store in the background
+
+		case *events.OfflineSyncCompleted:
+			// Contact store is now populated — refresh chat names
 			go a.RefreshChatNames(ctx)
 
 		case *events.Disconnected:
