@@ -205,7 +205,7 @@ func (s *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) er
 				WHEN chats.name IS NULL OR chats.name = '' THEN excluded.name
 				ELSE chats.name
 			END,
-			last_message_time = excluded.last_message_time`,
+			last_message_time = MAX(chats.last_message_time, excluded.last_message_time)`,
 		jid, name, lastMessageTime,
 	)
 	return err
