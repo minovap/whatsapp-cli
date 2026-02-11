@@ -15,6 +15,7 @@
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Complete Command Reference](#complete-command-reference)
+- [Docker / API Server](#docker--api-server)
 - [JSON Response Format](#json-response-format)
 - [Usage Examples](#usage-examples)
 - [Integration with LLMs/AI Tools](#integration-with-llmsai-tools)
@@ -693,6 +694,205 @@ whatsapp-cli media download --message-id XYZ987 --chat 1234567890@s.whatsapp.net
 - The sync loop downloads media concurrently in the background without blocking new messages
 - Re-running the command overwrites the existing file with a fresh download
 - Errors include metadata issues (expired link, missing direct path) or filesystem permissions
+
+---
+
+## Docker / API Server
+
+The project ships as a Docker image that runs an HTTP API server with background sync, QR-based authentication, and API-key security.
+
+### Quick Start
+
+```bash
+# 1. Create a .env file with your API key
+echo "API_KEY=$(openssl rand -hex 32)" > .env
+
+# 2. Create a docker-compose.yml
+cat > docker-compose.yml <<'EOF'
+services:
+  whatsapp-api:
+    image: ghcr.io/minovap/whatsapp-api:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - whatsapp-data:/data/store
+    environment:
+      API_KEY: ${API_KEY}
+      MAX_MESSAGES: 100
+      MAX_HOURS: 48
+      PHONE_WHITELIST: ${PHONE_WHITELIST:-}
+      PHONE_BLACKLIST: ${PHONE_BLACKLIST:-}
+
+volumes:
+  whatsapp-data:
+EOF
+
+# 3. Start the container
+docker compose up -d
+```
+
+### First Run: WhatsApp Authentication
+
+On first launch the server is unauthenticated. You need to scan a QR code to link your WhatsApp account.
+
+**Option A — View QR in Docker logs:**
+```bash
+docker compose logs -f whatsapp-api
+# A QR code will be printed as ASCII art in the terminal
+# Scan it with WhatsApp → Settings → Linked Devices → Link a Device
+```
+
+**Option B — Fetch QR as a PNG image:**
+```bash
+# Download the QR code image (opens in browser or image viewer)
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  http://localhost:8080/api/v1/auth/qr/image \
+  --output qr.png
+open qr.png  # macOS — use xdg-open on Linux
+```
+
+**Option C — Check auth status programmatically:**
+```bash
+curl -s -H "Authorization: Bearer YOUR_API_KEY" \
+  http://localhost:8080/api/v1/auth/status | jq
+```
+```json
+{
+  "success": true,
+  "data": {
+    "authenticated": true,
+    "connected": true
+  }
+}
+```
+
+Once authenticated, the session is persisted in the Docker volume (`whatsapp-data`). You won't need to re-scan unless the session expires (~20 days) or the volume is deleted.
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `API_KEY` | **Yes** | — | Secret key for API authentication |
+| `PORT` | No | `8080` | HTTP server port |
+| `STORE_DIR` | No | `/data/store` | Storage directory inside the container |
+| `MAX_MESSAGES` | No | `100` | Maximum messages returned per request |
+| `MAX_HOURS` | No | `48` | Only return messages from the last N hours |
+| `PHONE_WHITELIST` | No | — | Comma-separated phone numbers to allow (e.g. `1234567890,0987654321`) |
+| `PHONE_BLACKLIST` | No | — | Comma-separated phone numbers to block |
+| `LOG_LEVEL` | No | `info` | Log verbosity |
+
+> **Phone filtering**: If `PHONE_WHITELIST` is set, only those numbers appear in results and can receive messages. If `PHONE_BLACKLIST` is set, those numbers are excluded. They are mutually exclusive — use one or the other.
+
+### Authentication
+
+All `/api/v1/*` endpoints require an API key. Pass it as either:
+
+```bash
+# Header: Authorization Bearer
+curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:8080/api/v1/chats
+
+# Header: X-API-Key
+curl -H "X-API-Key: YOUR_API_KEY" http://localhost:8080/api/v1/chats
+```
+
+Health check endpoints (`/healthz`, `/readyz`) do **not** require authentication.
+
+### API Endpoints
+
+#### Health Checks
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/healthz` | No | Liveness probe — always returns `200` |
+| `GET` | `/readyz` | No | Readiness probe — `200` when authenticated **and** syncing |
+
+#### Messages
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/messages` | Yes | List messages |
+| `GET` | `/api/v1/messages/search` | Yes | Search messages by content |
+| `POST` | `/api/v1/messages/send` | Yes | Send a message |
+
+**List messages:**
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "http://localhost:8080/api/v1/messages?limit=10&page=0&chat_jid=1234567890@s.whatsapp.net" | jq
+```
+
+**Search messages:**
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "http://localhost:8080/api/v1/messages/search?query=meeting&limit=20" | jq
+```
+
+**Send a message:**
+```bash
+curl -s -X POST -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"to": "1234567890", "message": "Hello from the API!"}' \
+  http://localhost:8080/api/v1/messages/send | jq
+```
+
+#### Chats & Contacts
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/chats` | Yes | List chats |
+| `GET` | `/api/v1/contacts` | Yes | Search contacts |
+
+```bash
+# List chats
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "http://localhost:8080/api/v1/chats?limit=20" | jq
+
+# Search contacts
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "http://localhost:8080/api/v1/contacts?query=John" | jq
+```
+
+#### Auth & Sync Status
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/auth/status` | Yes | Check authentication state |
+| `GET` | `/api/v1/auth/qr/image` | Yes | Get QR code as PNG (only available before auth) |
+| `GET` | `/api/v1/sync/status` | Yes | Check sync daemon status and message count |
+
+```bash
+# Check sync progress
+curl -s -H "Authorization: Bearer $API_KEY" \
+  http://localhost:8080/api/v1/sync/status | jq
+```
+```json
+{
+  "success": true,
+  "data": {
+    "running": true,
+    "messages_synced": 4821
+  }
+}
+```
+
+### Container Management
+
+```bash
+# View logs
+docker compose logs -f whatsapp-api
+
+# Restart
+docker compose restart whatsapp-api
+
+# Stop
+docker compose down
+
+# Stop and delete data (will require re-authentication)
+docker compose down -v
+
+# Update to latest image
+docker compose pull && docker compose up -d
+```
 
 ---
 
@@ -1612,7 +1812,7 @@ A: Yes! Run `whatsapp-cli sync` to continuously receive and store messages. Run 
 A: Go provides single binary distribution, better performance, and whatsmeow is written in Go.
 
 **Q: Can I run this in Docker?**
-A: Yes, but QR code authentication requires terminal access. Use `-it` flags for interactive mode.
+A: Yes! See the [Docker / API Server](#docker--api-server) section below.
 
 **Q: Does it support proxy/VPN?**
 A: Respects system proxy settings. Set `HTTP_PROXY` and `HTTPS_PROXY` environment variables.
