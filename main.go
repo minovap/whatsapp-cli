@@ -102,6 +102,19 @@ func main() {
 		defer cancel()
 
 		srv := api.NewServer(cfg, app)
+
+		// Handle authentication state
+		if app.IsAuthenticated() {
+			srv.SetAuthenticated(true)
+			fmt.Fprintln(os.Stderr, "Already authenticated")
+		} else {
+			fmt.Fprintln(os.Stderr, "Not authenticated — starting QR auth flow")
+			srv.StartQRAuth(ctx, app)
+		}
+
+		// Start background sync (waits for authentication before syncing)
+		srv.StartBackgroundSync(ctx)
+
 		fmt.Fprintf(os.Stderr, "Starting API server on port %d\n", cfg.Port)
 		if err := srv.Start(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Server error: %v"}`+"\n", err)
@@ -144,7 +157,7 @@ func main() {
 		result = app.Auth(ctx)
 
 	case "sync":
-		result = app.Sync(ctx)
+		result = app.Sync(ctx, nil)
 
 	case "messages":
 		messagesCmd := flag.NewFlagSet("messages", flag.ExitOnError)

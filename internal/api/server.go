@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/mdp/qrterminal"
 )
 
 // AppService defines the interface for the application layer used by API handlers.
@@ -18,6 +21,7 @@ type AppService interface {
 	SendMessage(ctx context.Context, recipient, message string) string
 	IsAuthenticated() bool
 	IsConnected() bool
+	Sync(ctx context.Context, onMessage func()) string
 }
 
 type Server struct {
@@ -29,6 +33,10 @@ type Server struct {
 	authenticated atomic.Bool
 	syncing       atomic.Bool
 	currentQR     atomic.Value // stores string
+
+	// Sync daemon fields
+	syncRunning    atomic.Bool
+	messagesSynced atomic.Int64
 }
 
 func NewServer(cfg Config, app AppService) *Server {
@@ -64,6 +72,7 @@ func (s *Server) registerRoutes() {
 	apiMux.HandleFunc("POST /messages/send", s.handleSendMessage)
 	apiMux.HandleFunc("GET /auth/status", s.handleAuthStatus)
 	apiMux.HandleFunc("GET /auth/qr/image", s.handleQRImage)
+	apiMux.HandleFunc("GET /sync/status", s.handleSyncStatus)
 	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
 	s.apiMux = apiMux
 }
@@ -120,4 +129,77 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func (s *Server) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"running":         s.syncRunning.Load(),
+			"messages_synced": s.messagesSynced.Load(),
+		},
+	})
+}
+
+// QRAuthProvider is implemented by types that can perform QR-based authentication.
+// This is separate from AppService to avoid coupling the API package to whatsmeow types.
+type QRAuthProvider interface {
+	AuthWithQRCallback(ctx context.Context, onQR func(code string), onSuccess func()) error
+}
+
+// StartQRAuth launches a goroutine that performs QR authentication.
+// QR codes are printed to stderr as ASCII art (for docker logs) and stored
+// in Server.currentQR for the HTTP QR image endpoint.
+func (s *Server) StartQRAuth(ctx context.Context, auth QRAuthProvider) {
+	go func() {
+		err := auth.AuthWithQRCallback(ctx,
+			func(code string) {
+				s.SetCurrentQR(code)
+				fmt.Fprintln(os.Stderr, "\nScan this QR code with WhatsApp:")
+				printQRToStderr(code)
+			},
+			func() {
+				s.SetAuthenticated(true)
+				s.SetCurrentQR("")
+				fmt.Fprintln(os.Stderr, "\nAuthentication successful!")
+			},
+		)
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "QR auth error: %v\n", err)
+		}
+	}()
+}
+
+// StartBackgroundSync launches the sync daemon in a background goroutine.
+// It waits for authentication (polling Server.authenticated), then starts App.Sync.
+// The goroutine is cancelled when ctx is cancelled.
+func (s *Server) StartBackgroundSync(ctx context.Context) {
+	go func() {
+		// Wait for authentication before starting sync
+		for !s.authenticated.Load() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+			}
+		}
+
+		fmt.Fprintln(os.Stderr, "Starting background sync...")
+		s.syncRunning.Store(true)
+		s.SetSyncing(true)
+		defer func() {
+			s.syncRunning.Store(false)
+			s.SetSyncing(false)
+		}()
+
+		s.app.Sync(ctx, func() {
+			s.messagesSynced.Add(1)
+		})
+	}()
+}
+
+func printQRToStderr(code string) {
+	qrterminal.GenerateHalfBlock(code, qrterminal.M, os.Stderr)
 }

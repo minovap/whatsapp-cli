@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,6 +47,10 @@ type mockApp struct {
 
 	authenticated bool
 	connected     bool
+
+	syncResult string
+	syncCalled bool
+	syncCtx    context.Context
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string {
@@ -73,6 +78,14 @@ func (m *mockApp) SendMessage(_ context.Context, recipient, message string) stri
 	m.lastSendRecipient = recipient
 	m.lastSendMessage = message
 	return m.sendMessageResult
+}
+
+func (m *mockApp) Sync(ctx context.Context, onMessage func()) string {
+	m.syncCalled = true
+	m.syncCtx = ctx
+	// Block until context is cancelled to mimic real Sync behavior
+	<-ctx.Done()
+	return m.syncResult
 }
 
 func (m *mockApp) IsAuthenticated() bool {
@@ -1012,4 +1025,247 @@ func TestHandleSearchContacts_NoPhoneFilter(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Nil(t, mock.lastContactsIncludeJIDs)
 	assert.Nil(t, mock.lastContactsExcludeJIDs)
+}
+
+// --- Sync Status Tests ---
+
+func TestHandleSyncStatus_NotRunning(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/status", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, true, body["success"])
+	data := body["data"].(map[string]any)
+	assert.Equal(t, false, data["running"])
+	assert.Equal(t, float64(0), data["messages_synced"])
+}
+
+func TestHandleSyncStatus_Running(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+	srv.syncRunning.Store(true)
+	srv.messagesSynced.Store(42)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/status", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, true, body["success"])
+	data := body["data"].(map[string]any)
+	assert.Equal(t, true, data["running"])
+	assert.Equal(t, float64(42), data["messages_synced"])
+}
+
+func TestHandleSyncStatus_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sync/status", nil)
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestStartBackgroundSync_WaitsForAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv.StartBackgroundSync(ctx)
+
+	// Sync should not have started yet (not authenticated)
+	time.Sleep(50 * time.Millisecond)
+	assert.False(t, srv.syncRunning.Load())
+	assert.False(t, mock.syncCalled)
+
+	// Authenticate — sync should start
+	srv.SetAuthenticated(true)
+	// Give time for the polling loop (1s interval) + sync startup
+	assert.Eventually(t, func() bool {
+		return srv.syncRunning.Load() && mock.syncCalled
+	}, 3*time.Second, 50*time.Millisecond)
+	assert.True(t, srv.syncing.Load())
+
+	// Cancel context — sync should stop
+	cancel()
+	assert.Eventually(t, func() bool {
+		return !srv.syncRunning.Load()
+	}, 3*time.Second, 50*time.Millisecond)
+}
+
+func TestStartBackgroundSync_CancelledBeforeAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	srv.StartBackgroundSync(ctx)
+
+	// Cancel before authenticating
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	assert.False(t, srv.syncRunning.Load())
+	assert.False(t, mock.syncCalled)
+}
+
+func TestStartBackgroundSync_MessageCounter(t *testing.T) {
+	customMock := &syncCallbackMock{}
+	srv := NewServer(Config{APIKey: "test-key", MaxMessages: 100}, customMock)
+	srv.SetAuthenticated(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv.StartBackgroundSync(ctx)
+
+	// Wait for sync to start and get the callback
+	assert.Eventually(t, func() bool {
+		return customMock.getOnMessage() != nil
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// Call the callback and check counter
+	cb := customMock.getOnMessage()
+	cb()
+	cb()
+	cb()
+	assert.Equal(t, int64(3), srv.messagesSynced.Load())
+
+	cancel()
+}
+
+// syncCallbackMock captures the onMessage callback from Sync
+type syncCallbackMock struct {
+	mockApp
+	onMessageMu sync.Mutex
+	onMessageCb func()
+}
+
+func (m *syncCallbackMock) Sync(ctx context.Context, onMessage func()) string {
+	m.onMessageMu.Lock()
+	m.onMessageCb = onMessage
+	m.onMessageMu.Unlock()
+	<-ctx.Done()
+	return `{"success":true,"data":{"synced":true}}`
+}
+
+func (m *syncCallbackMock) getOnMessage() func() {
+	m.onMessageMu.Lock()
+	defer m.onMessageMu.Unlock()
+	return m.onMessageCb
+}
+
+// --- StartQRAuth Tests ---
+
+type mockQRAuth struct {
+	qrCodes   []string
+	onQRCalls []string
+	succeed   bool
+	err       error
+}
+
+func (m *mockQRAuth) AuthWithQRCallback(ctx context.Context, onQR func(code string), onSuccess func()) error {
+	if m.err != nil {
+		return m.err
+	}
+	for _, code := range m.qrCodes {
+		if onQR != nil {
+			onQR(code)
+		}
+		m.onQRCalls = append(m.onQRCalls, code)
+	}
+	if m.succeed && onSuccess != nil {
+		onSuccess()
+	}
+	return nil
+}
+
+func TestStartQRAuth_UpdatesCurrentQRAndAuthenticated(t *testing.T) {
+	srv := newTestServer(nil)
+
+	qrAuth := &mockQRAuth{
+		qrCodes: []string{"qr-code-1", "qr-code-2"},
+		succeed: true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv.StartQRAuth(ctx, qrAuth)
+
+	// Wait for auth to complete
+	assert.Eventually(t, func() bool {
+		return srv.authenticated.Load()
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// After success, currentQR should be cleared
+	assert.Equal(t, "", srv.GetCurrentQR())
+	assert.True(t, srv.authenticated.Load())
+}
+
+func TestStartQRAuth_SetsCurrentQRDuringAuth(t *testing.T) {
+	srv := newTestServer(nil)
+
+	// Use a blocking QR auth to observe intermediate state
+	qrReady := make(chan struct{})
+	done := make(chan struct{})
+	qrAuth := &blockingQRAuth{
+		code:    "test-qr",
+		ready:   qrReady,
+		done:    done,
+		succeed: true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv.StartQRAuth(ctx, qrAuth)
+
+	// Wait for QR code to be set
+	<-qrReady
+	assert.Equal(t, "test-qr", srv.GetCurrentQR())
+
+	// Signal success
+	close(done)
+	assert.Eventually(t, func() bool {
+		return srv.authenticated.Load()
+	}, 3*time.Second, 50*time.Millisecond)
+}
+
+type blockingQRAuth struct {
+	code    string
+	ready   chan struct{}
+	done    chan struct{}
+	succeed bool
+}
+
+func (m *blockingQRAuth) AuthWithQRCallback(ctx context.Context, onQR func(code string), onSuccess func()) error {
+	if onQR != nil {
+		onQR(m.code)
+	}
+	close(m.ready)
+	<-m.done
+	if m.succeed && onSuccess != nil {
+		onSuccess()
+	}
+	return nil
 }

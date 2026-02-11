@@ -70,6 +70,35 @@ func (a *App) Close() {
 	}
 }
 
+// AuthWithQRCallback starts the QR authentication flow and calls onQR with the
+// QR code string for each "code" event, and onSuccess when authentication succeeds.
+// It blocks until authentication completes, times out, or ctx is cancelled.
+func (a *App) AuthWithQRCallback(ctx context.Context, onQR func(code string), onSuccess func()) error {
+	qrChan, err := a.client.GetQRChannel(ctx)
+	if err != nil {
+		return err
+	}
+	for evt := range qrChan {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		switch evt.Event {
+		case "code":
+			if onQR != nil {
+				onQR(evt.Code)
+			}
+		case "success":
+			if onSuccess != nil {
+				onSuccess()
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("QR authentication failed")
+}
+
 func (a *App) Auth(ctx context.Context) string {
 	if a.client.IsAuthenticated() {
 		return output.Success(map[string]interface{}{
@@ -554,8 +583,9 @@ func contains(s, substr string) bool {
 	return false
 }
 
-// Sync connects to WhatsApp and continuously syncs messages to the database
-func (a *App) Sync(ctx context.Context) string {
+// Sync connects to WhatsApp and continuously syncs messages to the database.
+// If onMessage is non-nil, it is called for each message synced.
+func (a *App) Sync(ctx context.Context, onMessage func()) string {
 	messageCount := 0
 
 	version := a.version
@@ -636,6 +666,9 @@ func (a *App) Sync(ctx context.Context) string {
 			}
 
 			messageCount++
+			if onMessage != nil {
+				onMessage()
+			}
 			fmt.Fprintf(os.Stderr, "\r💬 Synced %d messages...", messageCount)
 
 		case *events.HistorySync:
@@ -754,6 +787,9 @@ func (a *App) Sync(ctx context.Context) string {
 					}
 
 					messageCount++
+					if onMessage != nil {
+						onMessage()
+					}
 				}
 			}
 			fmt.Fprintf(os.Stderr, "\r💬 Synced %d messages...", messageCount)
