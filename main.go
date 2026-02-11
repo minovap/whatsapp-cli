@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vicentereig/whatsapp-cli/internal/api"
 	"github.com/vicentereig/whatsapp-cli/internal/commands"
 )
 
@@ -73,6 +74,39 @@ func main() {
 	if command == "version" {
 		fmt.Printf(`{"success":true,"data":{"version":"%s"},"error":null}
 `, version)
+		return
+	}
+
+	// For serve, parse config and override store dir
+	if command == "serve" {
+		cfg, err := api.ParseConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Config error: %v"}`+"\n", err)
+			os.Exit(1)
+		}
+		serveStoreDir, _ := filepath.Abs(cfg.StoreDir)
+		app, err := commands.NewApp(serveStoreDir, version)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Failed to initialize: %v"}`+"\n", err)
+			os.Exit(1)
+		}
+		defer app.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			cancel()
+		}()
+		defer cancel()
+
+		srv := api.NewServer(cfg, app)
+		fmt.Fprintf(os.Stderr, "Starting API server on port %d\n", cfg.Port)
+		if err := srv.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, `{"success":false,"data":null,"error":"Server error: %v"}`+"\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
