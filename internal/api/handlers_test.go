@@ -18,6 +18,12 @@ type mockApp struct {
 	lastQuery          *string
 	lastLimit          int
 	lastPage           int
+
+	listChatsResult string
+	listChatsCalled bool
+	lastChatsQuery  *string
+	lastChatsLimit  int
+	lastChatsPage   int
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) string {
@@ -27,6 +33,14 @@ func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) 
 	m.lastLimit = limit
 	m.lastPage = page
 	return m.listMessagesResult
+}
+
+func (m *mockApp) ListChats(query *string, limit, page int) string {
+	m.listChatsCalled = true
+	m.lastChatsQuery = query
+	m.lastChatsLimit = limit
+	m.lastChatsPage = page
+	return m.listChatsResult
 }
 
 func newTestServer(app AppService) *Server {
@@ -225,6 +239,102 @@ func TestHandleListMessages_WritesAppResponseDirectly(t *testing.T) {
 	srv := newTestServer(mock)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, appJSON, w.Body.String())
+}
+
+func TestHandleListChats_Defaults(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.Equal(t, `{"success":true,"data":[]}`, w.Body.String())
+	assert.True(t, mock.listChatsCalled)
+	assert.Nil(t, mock.lastChatsQuery)
+	assert.Equal(t, 20, mock.lastChatsLimit)
+	assert.Equal(t, 0, mock.lastChatsPage)
+}
+
+func TestHandleListChats_WithQuery(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[{"jid":"123@s.whatsapp.net"}]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats?query=john", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, mock.lastChatsQuery)
+	assert.Equal(t, "john", *mock.lastChatsQuery)
+}
+
+func TestHandleListChats_WithLimitAndPage(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats?limit=50&page=2", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 50, mock.lastChatsLimit)
+	assert.Equal(t, 2, mock.lastChatsPage)
+}
+
+func TestHandleListChats_LimitCappedToMaxMessages(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats?limit=500", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 100, mock.lastChatsLimit) // capped to MaxMessages
+}
+
+func TestHandleListChats_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.False(t, mock.listChatsCalled)
+}
+
+func TestHandleListChats_WritesAppResponseDirectly(t *testing.T) {
+	appJSON := `{"success":true,"data":{"chats":[{"jid":"123@s.whatsapp.net","name":"John"}],"total":1}}`
+	mock := &mockApp{
+		listChatsResult: appJSON,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
 	req.Header.Set("X-API-Key", "test-key")
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)

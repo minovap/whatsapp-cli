@@ -44,6 +44,24 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(result))
 }
 
+func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
+	limit := parseIntParam(r, "limit", 20)
+	page := parseIntParam(r, "page", 0)
+
+	if limit > s.Config.MaxMessages {
+		limit = s.Config.MaxMessages
+	}
+
+	var query *string
+	if v := r.URL.Query().Get("query"); v != "" {
+		query = &v
+	}
+
+	result := s.app.ListChats(query, limit, page)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(result))
+}
+
 func parseIntParam(r *http.Request, name string, defaultVal int) int {
 	v := r.URL.Query().Get(name)
 	if v == "" {
