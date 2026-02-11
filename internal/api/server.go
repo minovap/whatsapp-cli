@@ -14,6 +14,7 @@ import (
 type AppService interface {
 	ListMessages(chatJID *string, query *string, limit, page int) string
 	ListChats(query *string, limit, page int) string
+	SearchContacts(query string) string
 }
 
 type Server struct {
@@ -53,6 +54,7 @@ func (s *Server) registerRoutes() {
 	apiMux.HandleFunc("GET /messages", s.handleListMessages)
 	apiMux.HandleFunc("GET /messages/search", s.handleSearchMessages)
 	apiMux.HandleFunc("GET /chats", s.handleListChats)
+	apiMux.HandleFunc("GET /contacts", s.handleSearchContacts)
 	s.mux.Handle("/api/v1/", s.authMiddleware(http.StripPrefix("/api/v1", apiMux)))
 	s.apiMux = apiMux
 }

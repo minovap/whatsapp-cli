@@ -62,6 +62,20 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(result))
 }
 
+func (s *Server) handleSearchContacts(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("query")
+	if query == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"success":false,"data":null,"error":"query parameter required"}`))
+		return
+	}
+
+	result := s.app.SearchContacts(query)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(result))
+}
+
 func parseIntParam(r *http.Request, name string, defaultVal int) int {
 	v := r.URL.Query().Get(name)
 	if v == "" {

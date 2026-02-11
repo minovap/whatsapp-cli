@@ -24,6 +24,10 @@ type mockApp struct {
 	lastChatsQuery  *string
 	lastChatsLimit  int
 	lastChatsPage   int
+
+	searchContactsResult string
+	searchContactsCalled bool
+	lastContactsQuery    string
 }
 
 func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) string {
@@ -33,6 +37,12 @@ func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) 
 	m.lastLimit = limit
 	m.lastPage = page
 	return m.listMessagesResult
+}
+
+func (m *mockApp) SearchContacts(query string) string {
+	m.searchContactsCalled = true
+	m.lastContactsQuery = query
+	return m.searchContactsResult
 }
 
 func (m *mockApp) ListChats(query *string, limit, page int) string {
@@ -335,6 +345,74 @@ func TestHandleListChats_WritesAppResponseDirectly(t *testing.T) {
 	srv := newTestServer(mock)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, appJSON, w.Body.String())
+}
+
+func TestHandleSearchContacts_Success(t *testing.T) {
+	mock := &mockApp{
+		searchContactsResult: `{"success":true,"data":[{"jid":"123@s.whatsapp.net","name":"John"}]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts?query=john", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+	assert.Equal(t, `{"success":true,"data":[{"jid":"123@s.whatsapp.net","name":"John"}]}`, w.Body.String())
+	assert.True(t, mock.searchContactsCalled)
+	assert.Equal(t, "john", mock.lastContactsQuery)
+}
+
+func TestHandleSearchContacts_MissingQuery(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+	var body map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, false, body["success"])
+	assert.Nil(t, body["data"])
+	assert.Equal(t, "query parameter required", body["error"])
+	assert.False(t, mock.searchContactsCalled)
+}
+
+func TestHandleSearchContacts_RequiresAuth(t *testing.T) {
+	mock := &mockApp{}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts?query=john", nil)
+	// No API key
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.False(t, mock.searchContactsCalled)
+}
+
+func TestHandleSearchContacts_WritesAppResponseDirectly(t *testing.T) {
+	appJSON := `{"success":true,"data":[{"jid":"456@s.whatsapp.net","name":"Jane","phone":"+1234567890"}]}`
+	mock := &mockApp{
+		searchContactsResult: appJSON,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts?query=jane", nil)
 	req.Header.Set("X-API-Key", "test-key")
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
