@@ -88,12 +88,15 @@ func (a *App) Auth(ctx context.Context) string {
 	})
 }
 
-func (a *App) ListMessages(chatJID *string, query *string, limit, page int) string {
+func (a *App) ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string {
 	messages, err := a.store.ListMessages(store.ListMessagesParams{
-		ChatJID: chatJID,
-		Query:   query,
-		Limit:   limit,
-		Page:    page,
+		ChatJID:     chatJID,
+		Query:       query,
+		Limit:       limit,
+		Page:        page,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
+		After:       after,
 	})
 	if err != nil {
 		return output.Error(err)
@@ -102,8 +105,12 @@ func (a *App) ListMessages(chatJID *string, query *string, limit, page int) stri
 	return output.Success(messages)
 }
 
-func (a *App) SearchContacts(query string) string {
-	contacts, err := a.store.SearchContacts(store.SearchContactsParams{Query: query})
+func (a *App) SearchContacts(query string, includeJIDs, excludeJIDs []string) string {
+	contacts, err := a.store.SearchContacts(store.SearchContactsParams{
+		Query:       query,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
+	})
 	if err != nil {
 		return output.Error(err)
 	}
@@ -111,11 +118,13 @@ func (a *App) SearchContacts(query string) string {
 	return output.Success(contacts)
 }
 
-func (a *App) ListChats(query *string, limit, page int) string {
+func (a *App) ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string {
 	chats, err := a.store.ListChats(store.ListChatsParams{
-		Query: query,
-		Limit: limit,
-		Page:  page,
+		Query:       query,
+		Limit:       limit,
+		Page:        page,
+		IncludeJIDs: includeJIDs,
+		ExcludeJIDs: excludeJIDs,
 	})
 	if err != nil {
 		return output.Error(err)

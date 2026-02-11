@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +21,10 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		chatJID = &v
 	}
 
-	result := s.app.ListMessages(chatJID, nil, limit, page)
+	includeJIDs, excludeJIDs := s.phoneFilter.JIDSuffixes()
+	after := s.computeAfter()
+
+	result := s.app.ListMessages(chatJID, nil, limit, page, includeJIDs, excludeJIDs, after)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
 }
@@ -41,7 +45,10 @@ func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
 		limit = s.Config.MaxMessages
 	}
 
-	result := s.app.ListMessages(nil, &query, limit, page)
+	includeJIDs, excludeJIDs := s.phoneFilter.JIDSuffixes()
+	after := s.computeAfter()
+
+	result := s.app.ListMessages(nil, &query, limit, page, includeJIDs, excludeJIDs, after)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
 }
@@ -59,7 +66,9 @@ func (s *Server) handleListChats(w http.ResponseWriter, r *http.Request) {
 		query = &v
 	}
 
-	result := s.app.ListChats(query, limit, page)
+	includeJIDs, excludeJIDs := s.phoneFilter.JIDSuffixes()
+
+	result := s.app.ListChats(query, limit, page, includeJIDs, excludeJIDs)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
 }
@@ -73,7 +82,9 @@ func (s *Server) handleSearchContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := s.app.SearchContacts(query)
+	includeJIDs, excludeJIDs := s.phoneFilter.JIDSuffixes()
+
+	result := s.app.SearchContacts(query, includeJIDs, excludeJIDs)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
 }
@@ -116,6 +127,16 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	result := s.app.SendMessage(r.Context(), req.To, req.Message)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(result))
+}
+
+// computeAfter returns a *time.Time representing the earliest allowed message time
+// based on Config.MaxHours. Returns nil if MaxHours is 0 (disabled).
+func (s *Server) computeAfter() *time.Time {
+	if s.Config.MaxHours <= 0 {
+		return nil
+	}
+	t := time.Now().Add(-time.Duration(s.Config.MaxHours) * time.Hour)
+	return &t
 }
 
 func parseIntParam(r *http.Request, name string, defaultVal int) int {

@@ -159,13 +159,13 @@ func main() {
 		}
 
 		if subcommand == "search" || *query != "" {
-			result = app.ListMessages(nil, query, *limit, *page)
+			result = app.ListMessages(nil, query, *limit, *page, nil, nil, nil)
 		} else {
 			var chatPtr *string
 			if *chatJID != "" {
 				chatPtr = chatJID
 			}
-			result = app.ListMessages(chatPtr, nil, *limit, *page)
+			result = app.ListMessages(chatPtr, nil, *limit, *page, nil, nil, nil)
 		}
 
 	case "contacts":
@@ -181,7 +181,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, `{"success":false,"data":null,"error":"--query required"}`)
 			os.Exit(1)
 		}
-		result = app.SearchContacts(*query)
+		result = app.SearchContacts(*query, nil, nil)
 
 	case "chats":
 		chatsCmd := flag.NewFlagSet("chats", flag.ExitOnError)
@@ -198,7 +198,7 @@ func main() {
 		if *query != "" {
 			queryPtr = query
 		}
-		result = app.ListChats(queryPtr, *limit, *page)
+		result = app.ListChats(queryPtr, *limit, *page, nil, nil)
 
 	case "send":
 		sendCmd := flag.NewFlagSet("send", flag.ExitOnError)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,16 +21,23 @@ type mockApp struct {
 	lastQuery          *string
 	lastLimit          int
 	lastPage           int
+	lastIncludeJIDs    []string
+	lastExcludeJIDs    []string
+	lastAfter          *time.Time
 
-	listChatsResult string
-	listChatsCalled bool
-	lastChatsQuery  *string
-	lastChatsLimit  int
-	lastChatsPage   int
+	listChatsResult     string
+	listChatsCalled     bool
+	lastChatsQuery      *string
+	lastChatsLimit      int
+	lastChatsPage       int
+	lastChatsIncludeJIDs []string
+	lastChatsExcludeJIDs []string
 
-	searchContactsResult string
-	searchContactsCalled bool
-	lastContactsQuery    string
+	searchContactsResult     string
+	searchContactsCalled     bool
+	lastContactsQuery        string
+	lastContactsIncludeJIDs  []string
+	lastContactsExcludeJIDs  []string
 
 	sendMessageResult string
 	sendMessageCalled bool
@@ -40,18 +48,23 @@ type mockApp struct {
 	connected     bool
 }
 
-func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int) string {
+func (m *mockApp) ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string {
 	m.listMessagesCalled = true
 	m.lastChatJID = chatJID
 	m.lastQuery = query
 	m.lastLimit = limit
 	m.lastPage = page
+	m.lastIncludeJIDs = includeJIDs
+	m.lastExcludeJIDs = excludeJIDs
+	m.lastAfter = after
 	return m.listMessagesResult
 }
 
-func (m *mockApp) SearchContacts(query string) string {
+func (m *mockApp) SearchContacts(query string, includeJIDs, excludeJIDs []string) string {
 	m.searchContactsCalled = true
 	m.lastContactsQuery = query
+	m.lastContactsIncludeJIDs = includeJIDs
+	m.lastContactsExcludeJIDs = excludeJIDs
 	return m.searchContactsResult
 }
 
@@ -70,11 +83,13 @@ func (m *mockApp) IsConnected() bool {
 	return m.connected
 }
 
-func (m *mockApp) ListChats(query *string, limit, page int) string {
+func (m *mockApp) ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string {
 	m.listChatsCalled = true
 	m.lastChatsQuery = query
 	m.lastChatsLimit = limit
 	m.lastChatsPage = page
+	m.lastChatsIncludeJIDs = includeJIDs
+	m.lastChatsExcludeJIDs = excludeJIDs
 	return m.listChatsResult
 }
 
@@ -813,4 +828,188 @@ func TestSetCurrentQR_GetCurrentQR(t *testing.T) {
 	// Clear QR code
 	srv.SetCurrentQR("")
 	assert.Equal(t, "", srv.GetCurrentQR())
+}
+
+// --- Phone Filter + MAX_HOURS Integration Tests ---
+
+func TestHandleListMessages_PassesPhoneFilterSuffixes(t *testing.T) {
+	mock := &mockApp{
+		listMessagesResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		MaxHours:       0, // disabled
+		PhoneWhitelist: []string{"1234567890"},
+	}, mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.listMessagesCalled)
+	assert.Equal(t, []string{"567890@"}, mock.lastIncludeJIDs)
+	assert.Nil(t, mock.lastExcludeJIDs)
+	assert.Nil(t, mock.lastAfter) // MaxHours=0 => no time filter
+}
+
+func TestHandleListMessages_PassesMaxHoursAfter(t *testing.T) {
+	mock := &mockApp{
+		listMessagesResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:      "test-key",
+		MaxMessages: 100,
+		MaxHours:    24,
+	}, mock)
+
+	before := time.Now().Add(-24 * time.Hour)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	after := time.Now().Add(-24 * time.Hour)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.listMessagesCalled)
+	require.NotNil(t, mock.lastAfter)
+	// The computed "after" should be between our before/after bounds
+	assert.True(t, mock.lastAfter.After(before) || mock.lastAfter.Equal(before))
+	assert.True(t, mock.lastAfter.Before(after) || mock.lastAfter.Equal(after))
+}
+
+func TestHandleListMessages_MaxHoursZeroDisablesTimeFilter(t *testing.T) {
+	mock := &mockApp{
+		listMessagesResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:      "test-key",
+		MaxMessages: 100,
+		MaxHours:    0,
+	}, mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, mock.lastAfter)
+}
+
+func TestHandleListMessages_NoPhoneFilter(t *testing.T) {
+	mock := &mockApp{
+		listMessagesResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock) // default: no whitelist/blacklist
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, mock.lastIncludeJIDs)
+	assert.Nil(t, mock.lastExcludeJIDs)
+}
+
+func TestHandleSearchMessages_PassesFilters(t *testing.T) {
+	mock := &mockApp{
+		listMessagesResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		MaxHours:       48,
+		PhoneBlacklist: []string{"9876543210"},
+	}, mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/messages/search?query=hello", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.listMessagesCalled)
+	assert.Nil(t, mock.lastIncludeJIDs)
+	assert.Equal(t, []string{"543210@"}, mock.lastExcludeJIDs)
+	require.NotNil(t, mock.lastAfter) // MaxHours=48 => after is set
+}
+
+func TestHandleListChats_PassesPhoneFilterSuffixes(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneWhitelist: []string{"1234567890"},
+	}, mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.listChatsCalled)
+	assert.Equal(t, []string{"567890@"}, mock.lastChatsIncludeJIDs)
+	assert.Nil(t, mock.lastChatsExcludeJIDs)
+}
+
+func TestHandleListChats_NoPhoneFilter(t *testing.T) {
+	mock := &mockApp{
+		listChatsResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, mock.lastChatsIncludeJIDs)
+	assert.Nil(t, mock.lastChatsExcludeJIDs)
+}
+
+func TestHandleSearchContacts_PassesPhoneFilterSuffixes(t *testing.T) {
+	mock := &mockApp{
+		searchContactsResult: `{"success":true,"data":[]}`,
+	}
+	srv := NewServer(Config{
+		APIKey:         "test-key",
+		MaxMessages:    100,
+		PhoneBlacklist: []string{"9876543210"},
+	}, mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts?query=john", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, mock.searchContactsCalled)
+	assert.Nil(t, mock.lastContactsIncludeJIDs)
+	assert.Equal(t, []string{"543210@"}, mock.lastContactsExcludeJIDs)
+}
+
+func TestHandleSearchContacts_NoPhoneFilter(t *testing.T) {
+	mock := &mockApp{
+		searchContactsResult: `{"success":true,"data":[]}`,
+	}
+	srv := newTestServer(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/contacts?query=john", nil)
+	req.Header.Set("X-API-Key", "test-key")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, mock.lastContactsIncludeJIDs)
+	assert.Nil(t, mock.lastContactsExcludeJIDs)
 }

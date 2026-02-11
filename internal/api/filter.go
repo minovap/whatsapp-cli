@@ -69,3 +69,23 @@ func matchesAny(suffix string, entries []string) bool {
 	}
 	return false
 }
+
+// JIDSuffixes returns the last-6-digit suffixes formatted for SQL LIKE patterns.
+// Each entry becomes "<last6digits>@%" so the store layer can use LIKE '%567890@%'.
+func (f *PhoneFilter) JIDSuffixes() (includeJIDs, excludeJIDs []string) {
+	for _, entry := range f.whitelist {
+		suffix := entry
+		if len(entry) > 6 {
+			suffix = entry[len(entry)-6:]
+		}
+		includeJIDs = append(includeJIDs, suffix+"@")
+	}
+	for _, entry := range f.blacklist {
+		suffix := entry
+		if len(entry) > 6 {
+			suffix = entry[len(entry)-6:]
+		}
+		excludeJIDs = append(excludeJIDs, suffix+"@")
+	}
+	return
+}

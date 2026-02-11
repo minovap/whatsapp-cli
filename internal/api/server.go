@@ -12,9 +12,9 @@ import (
 
 // AppService defines the interface for the application layer used by API handlers.
 type AppService interface {
-	ListMessages(chatJID *string, query *string, limit, page int) string
-	ListChats(query *string, limit, page int) string
-	SearchContacts(query string) string
+	ListMessages(chatJID *string, query *string, limit, page int, includeJIDs, excludeJIDs []string, after *time.Time) string
+	ListChats(query *string, limit, page int, includeJIDs, excludeJIDs []string) string
+	SearchContacts(query string, includeJIDs, excludeJIDs []string) string
 	SendMessage(ctx context.Context, recipient, message string) string
 	IsAuthenticated() bool
 	IsConnected() bool

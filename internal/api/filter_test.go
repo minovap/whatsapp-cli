@@ -94,3 +94,33 @@ func TestPhoneFilter_EmptySlices(t *testing.T) {
 	assert.True(t, f.IsAllowed("1234567890@s.whatsapp.net"))
 	assert.True(t, f.IsAllowed("9876543210@s.whatsapp.net"))
 }
+
+func TestPhoneFilter_JIDSuffixes_Whitelist(t *testing.T) {
+	f := NewPhoneFilter([]string{"1234567890"}, nil)
+	include, exclude := f.JIDSuffixes()
+	assert.Equal(t, []string{"567890@"}, include)
+	assert.Nil(t, exclude)
+}
+
+func TestPhoneFilter_JIDSuffixes_Blacklist(t *testing.T) {
+	f := NewPhoneFilter(nil, []string{"9876543210"})
+	include, exclude := f.JIDSuffixes()
+	assert.Nil(t, include)
+	assert.Equal(t, []string{"543210@"}, exclude)
+}
+
+func TestPhoneFilter_JIDSuffixes_Neither(t *testing.T) {
+	f := NewPhoneFilter(nil, nil)
+	include, exclude := f.JIDSuffixes()
+	assert.Nil(t, include)
+	assert.Nil(t, exclude)
+}
+
+func TestPhoneFilter_JIDSuffixes_Multiple(t *testing.T) {
+	f := NewPhoneFilter([]string{"1234567890", "1112223333"}, []string{"9876543210"})
+	include, exclude := f.JIDSuffixes()
+	// Whitelist entries
+	assert.Equal(t, []string{"567890@", "223333@"}, include)
+	// Blacklist entries
+	assert.Equal(t, []string{"543210@"}, exclude)
+}
