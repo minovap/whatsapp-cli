@@ -103,7 +103,7 @@ func (a *App) ListMessages(chatJID *string, query *string, limit, page int) stri
 }
 
 func (a *App) SearchContacts(query string) string {
-	contacts, err := a.store.SearchContacts(query)
+	contacts, err := a.store.SearchContacts(store.SearchContactsParams{Query: query})
 	if err != nil {
 		return output.Error(err)
 	}
