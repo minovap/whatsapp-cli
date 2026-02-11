@@ -2,18 +2,22 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/vicentereig/whatsapp-cli/internal/commands"
 )
 
 type Server struct {
-	mux    *http.ServeMux
-	Config Config
-	app    *commands.App
+	mux           *http.ServeMux
+	Config        Config
+	app           *commands.App
+	authenticated atomic.Bool
+	syncing       atomic.Bool
 }
 
 func NewServer(cfg Config, app *commands.App) *Server {
@@ -22,7 +26,51 @@ func NewServer(cfg Config, app *commands.App) *Server {
 		Config: cfg,
 		app:    app,
 	}
+	s.registerRoutes()
 	return s
+}
+
+func (s *Server) SetAuthenticated(v bool) {
+	s.authenticated.Store(v)
+}
+
+func (s *Server) SetSyncing(v bool) {
+	s.syncing.Store(v)
+}
+
+func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	authenticated := s.authenticated.Load()
+	syncing := s.syncing.Load()
+
+	if authenticated && syncing {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+		return
+	}
+
+	reason := "not authenticated"
+	if authenticated {
+		reason = "not syncing"
+	}
+
+	w.WriteHeader(http.StatusServiceUnavailable)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "not_ready",
+		"reason": reason,
+	})
 }
 
 func (s *Server) Start(ctx context.Context) error {

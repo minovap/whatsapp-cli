@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -59,4 +61,69 @@ func TestServer_StartAndGracefulShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not shut down within 5 seconds")
 	}
+}
+
+func TestHealthz(t *testing.T) {
+	srv := NewServer(Config{APIKey: "test-key"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", body["status"])
+}
+
+func TestReadyz_NotReady_NotAuthenticated(t *testing.T) {
+	srv := NewServer(Config{APIKey: "test-key"}, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, "not_ready", body["status"])
+	assert.Equal(t, "not authenticated", body["reason"])
+}
+
+func TestReadyz_NotReady_NotSyncing(t *testing.T) {
+	srv := NewServer(Config{APIKey: "test-key"}, nil)
+	srv.SetAuthenticated(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, "not_ready", body["status"])
+	assert.Equal(t, "not syncing", body["reason"])
+}
+
+func TestReadyz_Ready(t *testing.T) {
+	srv := NewServer(Config{APIKey: "test-key"}, nil)
+	srv.SetAuthenticated(true)
+	srv.SetSyncing(true)
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var body map[string]string
+	err := json.Unmarshal(w.Body.Bytes(), &body)
+	require.NoError(t, err)
+	assert.Equal(t, "ready", body["status"])
 }
